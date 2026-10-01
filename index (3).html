@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WH Pick Report Generator</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--tx:#1b1f24;--mu:#6b7280;--bd:#d9dde3;--ac:#0f766e;--ac2:#fff;--hd:#e8f3f1;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111418;--card:#1a1f26;--tx:#e8eaed;--mu:#9aa3af;--bd:#2d343d;--ac:#2dd4bf;--ac2:#06201d;--hd:#1f2d2b}}
+:root[data-theme="dark"]{--bg:#111418;--card:#1a1f26;--tx:#e8eaed;--mu:#9aa3af;--bd:#2d343d;--ac:#2dd4bf;--ac2:#06201d;--hd:#1f2d2b}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--mu);margin:0 0 14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:14px}
+.drop{border:2px dashed var(--bd);border-radius:10px;padding:22px;text-align:center;cursor:pointer;color:var(--mu)}
+.drop.on{border-color:var(--ac);color:var(--tx)}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{background:var(--ac);color:var(--ac2);border:0;border-radius:8px;padding:9px 14px;font-weight:600;cursor:pointer;font-size:14px}
+button.s{background:transparent;color:var(--tx);border:1px solid var(--bd)}
+button:disabled{opacity:.4;cursor:not-allowed}
+label{display:flex;gap:6px;align-items:center;color:var(--mu)}
+select{background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:6px}
+.fg{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:12px}
+.fg label{flex-direction:column;align-items:stretch;gap:3px;font-size:12px}
+.fg select,.fg input{width:100%;background:var(--card);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:7px;font-size:14px}
+.msg{margin-left:auto;color:var(--ac);font-weight:600}
+.wrap{overflow-x:auto;max-height:60vh;border:1px solid var(--bd);border-radius:8px}
+table{border-collapse:collapse;width:max-content;min-width:100%}
+th,td{padding:6px 10px;border-bottom:1px solid var(--bd);border-right:1px solid var(--bd);white-space:nowrap;text-align:left}
+th{background:var(--hd);position:sticky;top:0}
+td.n{text-align:right}
+.empty{padding:26px;text-align:center;color:var(--mu)}
+</style>
+</head>
+<body>
+<h1>WH Pick Report Generator</h1>
+<p class="sub">Upload the Draft Transfer Order Listing Report (Excel) → get the new pick report.</p>
+
+<div class="card">
+  <div class="drop" id="drop">Click or drop the Excel file here (.xlsx / .xls)</div>
+  <input type="file" id="file" accept=".xlsx,.xls,.xlsm" hidden>
+  <div id="fname" class="sub" style="margin:8px 0 0"></div>
+</div>
+
+<div class="card">
+  <div class="bar">
+    <button id="bCopy" disabled>1. Copy for Excel</button>
+    <button id="bExp" disabled>2. Export Excel</button>
+    <button id="bSave" disabled>3. Save data</button>
+    <button id="bClr" class="s" disabled>Clear</button>
+    <span class="msg" id="msg"></span>
+  </div>
+  <div class="bar" style="margin-top:10px">
+    <label><input type="checkbox" id="hdr"> Include header when copying</label>
+    <label><input type="checkbox" id="truck"> Only rows with Truck Nº</label>
+    <label><input type="checkbox" id="qty"> Qty &gt; 0 only</label>
+    <button class="s" id="bRst" type="button">Reset filters</button>
+    <span id="cnt" style="color:var(--mu)"></span>
+  </div>
+  <div class="fg">
+    <label>Status <select id="status"></select></label>
+    <label>Type <select id="type"></select></label>
+    <label>Truck Nº <input type="search" id="truckSel" placeholder="e.g. 3A-2259"></label>
+    <label>UOM <select id="uom"></select></label>
+    <label>Regional <select id="reg"></select></label>
+    <label>Agent <input type="search" id="agent" placeholder="e.g. CA5, TKM"></label>
+    <label>Item Nº / Description <input type="search" id="item" placeholder="e.g. 320007 or Krud"></label>
+  </div>
+</div>
+
+<div class="card" style="padding:0">
+  <div class="wrap"><table id="tbl"></table></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const COLS=["Date","WH_Pick Nº","Truck Nº","User ID","Agent Name","Item Nº","Descriptions","WH Nº","Bin Nº","Lot Nº","Pro_Date","BBD","Lid Nº","Quality","BBD 2","UOM","Remark"];
+const KEY="wh_pick_report_v2";
+let src=[];      // parsed source rows {truck,agent,item,desc,qty,uom,status}
+let fileName="";
+
+const $=id=>document.getElementById(id);
+const norm=s=>String(s==null?"":s).toLowerCase().replace(/[º°]/g,"o").replace(/[^a-z0-9]/g,"");
+const txt=v=>v==null?"":String(v).trim();
+const flash=m=>{$("msg").textContent=m;clearTimeout(flash.t);flash.t=setTimeout(()=>$("msg").textContent="",3000)};
+
+function cleanItem(v){
+  let s=txt(v).replace(/-01$/,"");
+  return /^\d+$/.test(s)?Number(s):s;
+}
+function cleanDesc(v){
+  return txt(v).replace(/[-\s]*ring\s*pull/gi,"").replace(/[-\s]+$/,"").trim();
+}
+function num(v){
+  if(v===""||v==null)return "";
+  const n=Number(v);return isNaN(n)?txt(v):n;
+}
+
+function parse(wb){
+  for(const name of wb.SheetNames){
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[name],{header:1,raw:true,defval:""});
+    let h=-1;
+    for(let i=0;i<Math.min(rows.length,30);i++){
+      const k=rows[i].map(norm);
+      if(k.includes("itemno")&&k.includes("tocode")){h=i;break}
+    }
+    if(h<0)continue;
+    const k=rows[h].map(norm), ix=n=>k.indexOf(n);
+    const c={truck:ix("truckno"),agent:ix("tocode"),item:ix("itemno"),desc:ix("itemdescription"),qty:ix("qtyorder"),uom:ix("uom"),status:ix("status"),type:ix("type"),reg:ix("reginal")};
+    const out=[];
+    for(const r of rows.slice(h+1)){
+      const g=i=>i<0?"":r[i];
+      if(txt(g(c.item))===""&&txt(g(c.agent))==="")continue;
+      out.push({truck:txt(g(c.truck)),agent:txt(g(c.agent)),item:g(c.item),desc:g(c.desc),qty:g(c.qty),uom:txt(g(c.uom)),status:txt(g(c.status)),type:txt(g(c.type)),reg:txt(g(c.reg))});
+    }
+    return out;
+  }
+  throw new Error("Could not find the columns 'Item Nº' and 'To Code' in this file.");
+}
+
+function build(){
+  const v=id=>$(id).value, ag=v("agent").trim().toLowerCase(), it=v("item").trim().toLowerCase();
+  return src.filter(r=>
+    (!v("status")||r.status===v("status"))&&(!v("type")||r.type===v("type"))&&
+    (!v("truckSel").trim()||r.truck.toLowerCase().includes(v("truckSel").trim().toLowerCase()))&&(!v("uom")||r.uom===v("uom"))&&
+    (!v("reg")||r.reg===v("reg"))&&
+    (!$("truck").checked||r.truck!=="")&&(!$("qty").checked||Number(r.qty)>0)&&
+    (!ag||r.agent.toLowerCase().includes(ag))&&
+    (!it||(txt(r.item)+" "+cleanItem(r.item)+" "+txt(r.desc)).toLowerCase().includes(it))
+  ).map(r=>[
+    "","",r.truck,"",r.agent,cleanItem(r.item),cleanDesc(r.desc),"","","","","","",num(r.qty),"",r.uom,""
+  ]);
+}
+
+function render(){
+  const data=build(), t=$("tbl");
+  if(!data.length){t.innerHTML="<tr><td class='empty'>No data. Upload the Excel report to begin.</td></tr>";}
+  else{
+    t.innerHTML="<thead><tr>"+COLS.map(c=>`<th>${c}</th>`).join("")+"</tr></thead><tbody>"+
+      data.map(r=>"<tr>"+r.map((v,i)=>`<td${i===13?' class="n"':''}>${String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;")}</td>`).join("")+"</tr>").join("")+"</tbody>";
+  }
+  $("cnt").textContent=data.length?data.length+" rows":"";
+  ["bCopy","bExp","bSave"].forEach(b=>$(b).disabled=!data.length);
+  $("bClr").disabled=!src.length;
+}
+
+const SELS=[["status","status"],["type","type"],["uom","uom"],["reg","reg"]];
+function fillStatus(){
+  for(const [id,f] of SELS){
+    const cur=$(id).value, o=[...new Set(src.map(r=>r[f]).filter(Boolean))].sort();
+    $(id).innerHTML='<option value="">All</option>'+o.map(x=>`<option>${x.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</option>`).join("");
+    if(o.includes(cur))$(id).value=cur;
+  }
+}
+const FIL=["status","type","truckSel","uom","reg","agent","item"];
+function resetF(){FIL.forEach(i=>$(i).value="");$("truck").checked=false;$("qty").checked=false;render()}
+
+async function load(file){
+  try{
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(buf,{type:"array"});
+    src=parse(wb);fileName=file.name;
+    $("fname").textContent="Loaded: "+file.name+" ("+src.length+" source rows)";
+    fillStatus();render();
+  }catch(e){alert(e.message||e)}
+}
+
+$("drop").onclick=()=>$("file").click();
+$("file").onchange=e=>{if(e.target.files[0])load(e.target.files[0]);e.target.value=""};
+$("drop").ondragover=e=>{e.preventDefault();$("drop").classList.add("on")};
+$("drop").ondragleave=()=>$("drop").classList.remove("on");
+$("drop").ondrop=e=>{e.preventDefault();$("drop").classList.remove("on");if(e.dataTransfer.files[0])load(e.dataTransfer.files[0])};
+FIL.concat(["truck","qty"]).forEach(id=>{$(id).onchange=render;$(id).oninput=render});
+$("bRst").onclick=resetF;
+
+$("bCopy").onclick=async()=>{
+  const rows=build(); if($("hdr").checked)rows.unshift(COLS);
+  const tsv=rows.map(r=>r.map(v=>String(v).replace(/[\t\r\n]+/g," ")).join("\t")).join("\n");
+  try{await navigator.clipboard.writeText(tsv)}
+  catch(e){const a=document.createElement("textarea");a.value=tsv;document.body.appendChild(a);a.select();document.execCommand("copy");a.remove()}
+  flash("Copied "+(rows.length-($("hdr").checked?1:0))+" rows — paste into Excel");
+};
+
+$("bExp").onclick=()=>{
+  const ws=XLSX.utils.aoa_to_sheet([COLS,...build()]);
+  ws["!cols"]=COLS.map((c,i)=>({wch:i===6?48:Math.max(10,c.length+2)}));
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Pick Report");
+  const d=new Date(),p=n=>String(n).padStart(2,"0");
+  XLSX.writeFile(wb,`WH_Pick_Report_${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}.xlsx`);
+  flash("Excel exported");
+};
+
+$("bSave").onclick=()=>{
+  try{
+    localStorage.setItem(KEY,JSON.stringify({src,fileName,f:Object.fromEntries(FIL.map(i=>[i,$(i).value])),truck:$("truck").checked,qty:$("qty").checked,at:Date.now()}));
+    flash("Data saved ✓");
+  }catch(e){flash("Could not save in this browser")}
+};
+
+$("bClr").onclick=()=>{
+  if(!confirm("Clear the loaded data and the saved copy?"))return;
+  src=[];fileName="";FIL.forEach(i=>$(i).value="");$("fname").textContent="";
+  try{localStorage.removeItem(KEY)}catch(e){}
+  fillStatus();render();
+};
+
+try{
+  const s=JSON.parse(localStorage.getItem(KEY)||"null");
+  if(s&&s.src&&s.src.length){
+    src=s.src;fileName=s.fileName||"";
+    $("fname").textContent="Restored saved data"+(fileName?" from "+fileName:"")+" ("+src.length+" source rows)";
+    fillStatus();FIL.forEach(i=>$(i).value=(s.f&&s.f[i])||"");$("truck").checked=!!s.truck;$("qty").checked=!!s.qty;
+  }
+}catch(e){}
+render();
+</script>
+</body>
+</html>
